@@ -1,2 +1,2 @@
-# font_conv_cli
-font转SGL格式
+# sgl_font_conv_c_version
+SGL font convert
