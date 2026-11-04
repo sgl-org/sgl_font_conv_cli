@@ -42,8 +42,6 @@ static void print_usage(const char *prog)
         "  --flash               External flash font: bitmap is written to a .bin file\n"
         "                        (same name as --output, .bin extension) and the\n"
         "                        generated font uses SGL_FONT_FMT_EXT_FLASH\n"
-        "  --fixed               With --flash: all glyphs must share identical metrics\n"
-        "                        (monospaced); uses SGL_FONT_FMT_EXT_FLASH_FIXED\n"
         "\n"
         "Example (single font):\n"
         "  %s --font font.otf --symbols-file chinese.txt --size 24 --bpp 4 --output out.c\n"
@@ -139,26 +137,10 @@ static char *extract_font_name(const char *output_path)
     return name;
 }
 
-/* Ensure parent directory exists (simple version for common cases) */
+/* Ensure parent directory exists (UTF-8 path aware) */
 static void ensure_parent_dir(const char *filepath)
 {
-    char *path = strdup(filepath);
-    char *last_sep = strrchr(path, '/');
-    if (!last_sep) last_sep = strrchr(path, '\\');
-    if (last_sep) {
-        *last_sep = '\0';
-#ifdef _WIN32
-        /* Use system mkdir on Windows */
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "mkdir \"%s\" 2>nul", path);
-        system(cmd);
-#else
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\"", path);
-        system(cmd);
-#endif
-    }
-    free(path);
+    utf8_make_dirs(filepath);
 }
 
 /* Add codepoints to the current font entry */
@@ -218,7 +200,6 @@ int main(int argc, char *argv[])
     int smart_mono_flag = 0;
     int spacing_val = 0;
     int flash_flag = 0;
-    int flash_fixed_flag = 0;
 
     font_entry_t *font_head = NULL;
     font_entry_t *font_tail = NULL;
@@ -261,8 +242,6 @@ int main(int argc, char *argv[])
             spacing_val = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--flash") == 0) {
             flash_flag = 1;
-        } else if (strcmp(argv[i], "--fixed") == 0) {
-            flash_fixed_flag = 1;
         } else if (strcmp(argv[i], "--symbols") == 0 && i + 1 < argc) {
             if (!current_entry) {
                 fprintf(stderr, "Error: --symbols must follow a --font\n");
@@ -350,17 +329,6 @@ int main(int argc, char *argv[])
     }
     if (!output_path) {
         fprintf(stderr, "Error: --output is required\n");
-        free_font_entries(font_head);
-        return 1;
-    }
-    if (flash_fixed_flag && !flash_flag) {
-        fprintf(stderr, "Error: --fixed requires --flash\n");
-        free_font_entries(font_head);
-        return 1;
-    }
-    if (flash_fixed_flag && compress_flag) {
-        fprintf(stderr, "Error: --fixed cannot be combined with --compress "
-                        "(glyph offsets are computed from a uniform glyph size)\n");
         free_font_entries(font_head);
         return 1;
     }
@@ -463,7 +431,7 @@ int main(int argc, char *argv[])
         ensure_parent_dir(bin_path);
     }
 
-    FILE *fp = fopen(output_path, "w");
+    FILE *fp = utf8_fopen(output_path, "w");
     if (!fp) {
         fprintf(stderr, "Error: cannot open output file '%s'\n", output_path);
         free(font_name);
@@ -482,7 +450,6 @@ int main(int argc, char *argv[])
         .smart_mono = smart_mono_flag,
         .spacing = spacing_val,
         .flash = flash_flag,
-        .flash_fixed = flash_fixed_flag,
         .bin_path = bin_path
     };
 
