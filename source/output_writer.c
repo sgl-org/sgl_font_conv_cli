@@ -377,6 +377,7 @@ int write_sgl_font(FILE *fp, const writer_ctx_t *ctx)
     size_t glyph_count = font->glyph_count;
     size_t st_idx;
     int flash = ctx->flash;
+    int use_fixed = 0;
     compiled_glyph_t *compiled = NULL;
     block_fixed_t *blocks = NULL;
 
@@ -399,14 +400,24 @@ int write_sgl_font(FILE *fp, const writer_ctx_t *ctx)
     blocks = (block_fixed_t *)calloc(cmap->count, sizeof(block_fixed_t));
     if (!blocks) return -1;
 
-    if (ctx->fixed && !should_compress(ctx->bpp, ctx->compress)) {
+    /* The shared descriptor is only worth having for an external flash font:
+     * it removes font table entries from the scarce internal flash and the
+     * price is padding inside the bitmap blob, which lives in cheap external
+     * flash. A RAM font would pay the padding in internal flash as well and
+     * keep the table it did not save, so --fixed is ignored there. */
+    if (ctx->fixed && !ctx->flash) {
+        fprintf(stderr,
+                "Note: --fixed ignored without --flash, a RAM font pays the padding and\n"
+                "      keeps the table, so one font table entry per character is emitted\n");
+    } else if (ctx->fixed && should_compress(ctx->bpp, ctx->compress)) {
+        fprintf(stderr,
+                "Note: --fixed ignored, RLE compressed bitmaps have no uniform stride\n");
+    } else if (ctx->fixed) {
+        use_fixed = 1;
         for (st_idx = 0; st_idx < cmap->count; st_idx++) {
             block_try_fix((font_data_t *)font, &cmap->subtables[st_idx],
                           (int)st_idx, ctx->bpp, &blocks[st_idx]);
         }
-    } else if (ctx->fixed) {
-        fprintf(stderr,
-                "Note: --fixed ignored, RLE compressed bitmaps have no uniform stride\n");
     }
 
     /* ---- Phase 2: compile all glyph bitmaps ---- */
@@ -446,7 +457,7 @@ int write_sgl_font(FILE *fp, const writer_ctx_t *ctx)
         }
     }
 
-    if (ctx->fixed) {
+    if (use_fixed) {
         for (st_idx = 0; st_idx < cmap->count; st_idx++) {
             const block_fixed_t *bf = &blocks[st_idx];
             long delta;
@@ -547,6 +558,49 @@ int write_sgl_font(FILE *fp, const writer_ctx_t *ctx)
     fprintf(fp, "#endif\n\n");
     fprintf(fp, "#if %s\n\n", macro_name);
 
+    /* ---- Phase 4.5: spell out the requirements the target build has to meet,
+     * so that a misconfigured project fails to compile rather than render
+     * garbage. ---- */
+    {
+        size_t bs;
+        int fixed_used = 0;
+
+        for (bs = 0; bs < cmap->count; bs++) {
+            if (blocks[bs].used) {
+                fixed_used = 1;
+                break;
+            }
+        }
+
+        /* Monospaced blocks are only decoded when the library is built with
+         * external flash font support, because that is the only layout where
+         * trading table for bitmap pays off. Without it the lookup branches of
+         * sgl_core.c are compiled out, so such a font could only be misread. */
+        if (fixed_used) {
+            fprintf(fp, "#if (!CONFIG_SGL_FLASH_FONT)\n");
+            fprintf(fp, "#error \"%s uses monospaced blocks (--fixed), which "
+                        "requires CONFIG_SGL_FLASH_FONT 1\"\n", ctx->font_name);
+            fprintf(fp, "#endif\n\n");
+        }
+
+        /* The bitmap blob of a big font does not fit into the 16 bit
+         * bitmap_index of the small font table anymore. The compiler only
+         * truncates the initializers, and a wrapped offset silently draws another
+         * character, so make the requirement visible at build time instead. */
+        if (total_bitmap_size > 65535) {
+            fprintf(fp, "/* The bitmap blob is %u bytes, more than the 64 KB a 16 bit\n"
+                        " * bitmap_index can address: this project must be built with\n"
+                        " * CONFIG_SGL_FONT_SMALL_TABLE set to 0. */\n"
+                        "typedef char %s_bitmap_index_needs_32_bit_table[\n"
+                        "        sizeof(((sgl_font_table_t *)0)->bitmap_index) >= 4 ? 1 : -1];\n\n",
+                    (unsigned)total_bitmap_size, ctx->font_name);
+            fprintf(stderr,
+                    "Warning: bitmap blob is %u bytes (> 64 KB), build the target "
+                    "with CONFIG_SGL_FONT_SMALL_TABLE 0\n",
+                    (unsigned)total_bitmap_size);
+        }
+    }
+
     /* ---- Phase 5: write font_bitmap[] (skipped for external flash fonts,
      * the bitmap blob lives in the .bin file instead) ---- */
     if (!flash) {
@@ -598,7 +652,10 @@ int write_sgl_font(FILE *fp, const writer_ctx_t *ctx)
         size_t k;
 
         if (bf->used) {
-            fprintf(fp, ",\n    /* U+%04X..U+%04X: monospaced block, shared descriptor */",
+            /* No entry is emitted for this block, so it must not touch the
+             * comma either: a comment is not an initializer element, and two
+             * adjacent monospaced blocks would leave a stray comma behind. */
+            fprintf(fp, "\n    /* U+%04X..U+%04X: monospaced block, shared descriptor */",
                     st->min_code, st->max_code);
             continue;
         }
