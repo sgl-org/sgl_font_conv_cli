@@ -813,8 +813,8 @@ int write_sgl_font(FILE *fp, const writer_ctx_t *ctx)
     if (flash) {
         fprintf(fp, "#if (CONFIG_SGL_FLASH_FONT)\n");
         fprintf(fp, "    .flash_read = %s_flash_read,\n", ctx->font_name);
-        fprintf(fp, "    .flash_addr = 0, /* offset of the %s blob in external flash */\n",
-                ctx->font_name);
+        fprintf(fp, "    .flash_addr = 0x%08X, /* offset of the %s blob in external flash */\n",
+                (unsigned)ctx->flash_addr, ctx->font_name);
         fprintf(fp, "#endif\n");
     }
     fprintf(fp, "};\n");
